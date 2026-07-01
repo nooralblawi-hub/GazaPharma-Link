@@ -125,6 +125,62 @@ INSERT INTO open_requests (required_medicine, details, status) VALUES
 ('Clexane 4000', 'مطلوب حقن كليكسان لامرأة حامل بشكل عاجل، مفقود من الصيدليات القريبة', 'تم الرد'),
 ('Euthyrox 50mg', 'دواء الغدة الدرقية يوتيروكس 50 ميكروغرام، غير متوفر في الشمال منذ أسابيع', 'مفتوح'),
 ('Insulin Lantus', 'مطلوب قلم أنسولين لانتوس لشيخ مسن في خانيونس', 'مفتوح');
-
 INSERT INTO request_replies (request_id, pharmacy_id, notes) VALUES
 (1, 6, 'متوفر لدينا في صيدلية رفح المركزية كمية محدودة (3 علب فقط)، يرجى الحضور لحجزها');
+
+
+-- =======================================================
+-- 3. إنشاء جدول المخزون (Inventory) وعقد العلاقات
+-- =======================================================
+DROP TABLE IF EXISTS inventory;
+CREATE TABLE inventory (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    pharmacy_id INT NOT NULL,
+    medicine_id INT NOT NULL,
+    quantity INT NOT NULL DEFAULT 0,
+    batch_number VARCHAR(50) NOT NULL,
+    expiry_date DATE NOT NULL,
+    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    -- عقد العلاقات (Foreign Keys)
+    CONSTRAINT fk_inventory_pharmacy FOREIGN KEY (pharmacy_id) REFERENCES pharmacies(id) ON DELETE CASCADE,
+    CONSTRAINT fk_inventory_medicine FOREIGN KEY (medicine_id) REFERENCES medicines(id) ON DELETE CASCADE
+);
+
+
+-- =======================================================
+-- 4. برمجة منطق تمييز البيانات القديمة (Staleness Logic)
+-- =======================================================
+
+-- أولاً: عرض الأدوية المنتهية الصلاحية أو القريبة من الانتهاء (أقل من 30 يوماً)
+CREATE OR REPLACE VIEW view_expired_or_stale_medicine AS
+SELECT 
+    i.id AS inventory_id,
+    p.name AS pharmacy_name,
+    m.commercial_name AS medicine_name,
+    i.quantity,
+    i.batch_number,
+    i.expiry_date,
+    DATEDIFF(i.expiry_date, CURDATE()) AS days_until_expiry,
+    CASE 
+        WHEN i.expiry_date <= CURDATE() THEN 'EXPIRED'
+        WHEN DATEDIFF(i.expiry_date, CURDATE()) <= 30 THEN 'CRITICAL_STALE'
+        ELSE 'OK'
+    END AS staleness_status
+FROM inventory i
+JOIN pharmacies p ON i.pharmacy_id = p.id
+JOIN medicines m ON i.medicine_id = m.id;
+
+-- ثانياً: عرض سجلات المخزون التي لم تُحدّث كمياتها منذ أكثر من 30 يوماً (بيانات قديمة تحتاج مراجعة)
+CREATE OR REPLACE VIEW view_outdated_inventory_records AS
+SELECT 
+    i.id AS inventory_id,
+    p.name AS pharmacy_name,
+    m.commercial_name AS medicine_name,
+    i.quantity,
+    i.last_updated_at,
+    DATEDIFF(CURDATE(), i.last_updated_at) AS days_since_last_update
+FROM inventory i
+JOIN pharmacies p ON i.pharmacy_id = p.id
+JOIN medicines m ON i.medicine_id = m.id
+WHERE DATEDIFF(CURDATE(), i.last_updated_at) > 30;
